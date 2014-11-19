@@ -71,6 +71,8 @@ function upgradeWithDefinition(element, definition) {
 function implementPrototype(element, definition) {
   // prototype swizzling is best
   if (Object.__proto__) {
+    // but if upgrade is asynchronous to element creation, we need to check for property alterations.
+    generateCarry(element, definition.prototype, definition.native);
     element.__proto__ = definition.prototype;
   } else {
     // where above we can re-acquire inPrototype via
@@ -81,11 +83,12 @@ function implementPrototype(element, definition) {
   }
 }
 
-function customMixin(inTarget, inSrc, inNative) {
+function iterateProperties(inTarget, inSrc, inNative, f) {
   // TODO(sjmiles): 'used' allows us to only copy the 'youngest' version of
   // any property. This set should be precalculated. We also need to
   // consider this for supporting 'super'.
   var used = {};
+  var carry = {};
   // start with inSrc
   var p = inSrc;
   // The default is HTMLElement.prototype, so we add a test to avoid mixing in
@@ -94,13 +97,41 @@ function customMixin(inTarget, inSrc, inNative) {
     var keys = Object.getOwnPropertyNames(p);
     for (var i=0, k; k=keys[i]; i++) {
       if (!used[k]) {
-        Object.defineProperty(inTarget, k,
-            Object.getOwnPropertyDescriptor(p, k));
+	    // On some systems, createCallback is not synchronous, so check to see if
+		// between creation and upgrading a value for this property has been defined.
+	    var desc = Object.getOwnPropertyDescriptor(inTarget, k);
+		var existing = !!(desc && 'value' in desc);
+		if (existing)
+		  carry[k] = desc.value;
+			
+        f(inTarget, p, k, existing);
         used[k] = 1;
       }
     }
     p = Object.getPrototypeOf(p);
   }
+  
+  // If any values got defined between creation and upgrade, carry them forth until
+  // after the createCallback.
+  if (Object.keys(carry).length)
+    inTarget.__carry = carry;
+}
+
+function defineCustomProperty(e, p, k) {
+  Object.defineProperty(e, k, Object.getOwnPropertyDescriptor(p, k));	
+}
+
+function deleteProperty(e, p, k, hasExisting) {
+  if (hasExisting)
+    delete e[k];
+}
+
+function generateCarry(inTarget, inSrc, inNative) {
+  iterateProperties(inTarget, inSrc, inNative, deleteProperty);
+}
+
+function customMixin(inTarget, inSrc, inNative) {
+  iterateProperties(inTarget, inSrc, inNative, defineCustomProperty);
 }
 
 function created(element) {
@@ -108,6 +139,14 @@ function created(element) {
   if (element.createdCallback) {
     element.createdCallback();
   }
+  
+  // Any carried values should be set here.
+  if (element.__carry) {
+    for (var k in element.__carry)
+	  element[k] = element.__carry[k];
+	  
+	delete element.__carry;
+	}
 }
 
 scope.upgrade = upgrade;
